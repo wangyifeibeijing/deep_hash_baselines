@@ -47,12 +47,13 @@ class VGG(nn.Module):
         x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        y=x
         x = self.classifier(x)
         x = self.hash_layer(x)
 
         x = torch.tanh(x)
 
-        return x
+        return x,y
 
 
 def make_layers(cfg, batch_norm=False):

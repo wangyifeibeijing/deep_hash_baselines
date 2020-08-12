@@ -1,14 +1,10 @@
 import time
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from kmeans_pytorch import kmeans
 from loguru import logger
 from torch.optim.lr_scheduler import CosineAnnealingLR
-
-import torch.nn.functional as F
-
 from models.model_loader import load_model
 from models.model_loader import load_model_mo
 from utils.evaluate import mean_average_precision, pr_curve
@@ -17,13 +13,19 @@ from utils.evaluate import mean_average_precision, pr_curve
 def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_length, device, lr,
           max_iter, topk, evaluate_interval, anchor_num, proportion
           ):
-    #print("using device")
-    #print(torch.cuda.current_device())
-    #print(torch.cuda.get_device_name(torch.cuda.current_device()))
+    rho1 = 1e-2
+    #ρ1
+    rho2 = 1e-2
+    #ρ2
+    rho3 = 1e-3
+    #µ1
+    rho4 = 1e-3
+    #µ2
+    gamma = 1e-3
+    #γ
+
     # Load model
     model = load_model(arch, code_length).to(device)
-    model_mo = load_model_mo(arch).to(device)
-
     # Create criterion, optimizer, scheduler
     criterion = PrototypicalLoss()
     optimizer = optim.RMSprop(
@@ -47,7 +49,8 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
         # timer
         tic = time.time()
 
-        # harvest prototypes/anchors#some times killed, try another way
+        # ADMM use anchors in first step but drop them later
+        '''
         with torch.no_grad():
             output_mo = torch.tensor([]).to(device)
             for data, _, _ in train_dataloader:
@@ -55,41 +58,48 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
                 output_mo_temp = model_mo(data)
                 output_mo = torch.cat((output_mo, output_mo_temp), 0)
                 torch.cuda.empty_cache()
-
             anchor = get_anchor(output_mo, anchor_num, device)  # compute anchor
+        '''
+        with torch.no_grad():
+            output_mo = torch.tensor([]).to(device)
+            data_mo = torch.tensor([]).to(device)
+            for data, _, _ in train_dataloader:
+                data = data.to(device)
+                output_B, output_A = model(data)
 
+                data_mo = torch.cat((data_mo, data), 0)
+                output_mo = torch.cat((output_mo, output_A), 0)
+                torch.cuda.empty_cache()
+            n= data_mo.size(1)
+            Y1=torch.rand(n,code_length).to(device)
+            Y2 = torch.rand(n, code_length).to(device)
+            dist = euclidean_dist(output_mo, output_mo)
+            dist = torch.exp(-1 * dist / torch.max(dist)).to(device)
+            A = (2 / (torch.max(dist) - torch.min(dist))) * dist - 1
+            B = ()
+            Z1 = B + 1 / rho1 * Y1
+            Z1[Z1 > 1] = 1
+            Z1[Z1 > -1] = -1
+            Z2 = B + 1 / rho2 * Y2
+            norm_B = torch.norm(Z2)
+            Z2 = torch.sqrt(n * code_length) * Z2 / norm_B
+            Y1 = Y1 + gamma * rho1 * (B - Z1);
+            Y2 = Y2 + gamma * rho2 * (B - Z2);
         # self-supervised deep learning
         model.train()
         for data, targets, index in train_dataloader:
             data, targets, index = data.to(device), targets.to(device), index.to(device)
             optimizer.zero_grad()
 
-            # output
-            output_B = model(data)
-            output_mo_batch = model_mo(data)
-
-            # prototypes/anchors based similarity
-
-            #sample_anchor_distance = torch.sqrt(torch.sum((output_mo_batch[:, None, :] - anchor) ** 2, dim=2)).to(device)
-            #sample_anchor_dist_normalize = F.normalize(sample_anchor_distance, p=2, dim=1).to(device)
-            #S = sample_anchor_dist_normalize @ sample_anchor_dist_normalize.t()
-
-            # loss
-            #loss = criterion(output_B, S)
-            #running_loss = running_loss + loss.item()
-            #loss.backward(retain_graph=True)
-            with torch.no_grad():
-                dist = torch.sum((output_mo_batch[:, None, :] - anchor.to(device)) ** 2, dim=2)
-                k = dist.size(1)
-                dist = torch.exp(-1 * dist / torch.max(dist)).to(device)
-                Z_su = torch.ones(k, 1).to(device)
-                Z_sum = torch.sqrt(dist.mm(Z_su)) + 1e-12
-                Z_simi = torch.div(dist, Z_sum).to(device)
-                S = (Z_simi.mm(Z_simi.t()))
-                S=(2/(torch.max(S)-torch.min(S)))*S-1
+            # output_B for hash code .output_A for result without hash layer
+            output_B, output_A= model(data)
 
 
-            loss = criterion(output_B, S)
+
+
+
+
+            loss = criterion(output_B, B)
 
             running_loss += loss.item()
             loss.backward()
@@ -159,6 +169,27 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
     return checkpoint
 
 
+def euclidean_dist(x, y):
+    """
+    Args:
+      x: pytorch Variable, with shape [m, d]
+      y: pytorch Variable, with shape [n, d]
+    Returns:
+      dist: pytorch Variable, with shape [m, n]
+    """
+
+    m, n = x.size(0), y.size(0)
+    # xx经过pow()方法对每单个数据进行二次方操作后，在axis=1 方向（横向，就是第一列向最后一列的方向）加和，此时xx的shape为(m, 1)，经过expand()方法，扩展n-1次，此时xx的shape为(m, n)
+    xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
+    # yy会在最后进行转置的操作
+    yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
+    dist = xx + yy
+    # torch.addmm(beta=1, input, alpha=1, mat1, mat2, out=None)，这行表示的意思是dist - 2 * x * yT
+    dist.addmm_(1, -2, x, y.t())
+    # clamp()函数可以限定dist内元素的最大最小范围，dist最后开方，得到样本之间的距离矩阵
+    dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
+    return dist
+
 def get_anchor(all_data, anchor_num, device):
     cluster_ids_x, cluster_centers = kmeans(
         X=all_data, num_clusters=anchor_num, distance='euclidean', device=device
@@ -201,23 +232,13 @@ class PrototypicalLoss(nn.Module):
 
     def __init__(self):
         super(PrototypicalLoss, self).__init__()
-        #print('PrototypicalLoss works!')
 
-    def forward(self, H, S):
-        # H: batchsize \times code_length; S: similarity matrix [0,1 ]^{batchsize \times batchsize}
-        code_length = H.size(1)
 
-        '''
-        k = Z.size(1)
-        Z_su=torch.ones(k, 1)
-        Z_sum=Z.mm(Z_su)+1e-12
-        Z_nor=torch.div(Z, Z_sum)
-        Z_simi=torch.exp(-1*Z_nor/torch.max(Z_nor))
-        S = Z_simi.mm(Z_simi.t()) - 1
-        '''
-        #loss = torch.mean(H @ H.t() / code_length - S) # ||1/q H*H' - S ||_F^2##old version , but we can use MSE directly
+    def forward(self, H, B):
+
+
 
         loss_fn = torch.nn.MSELoss(reduction='mean')# mean of the square of each element
-        loss = loss_fn(H @ H.t() / code_length, S)#H @ H.t() / code_length - S
+        loss = loss_fn(H , B)#H @ H.t() / code_length - S
 
         return loss
