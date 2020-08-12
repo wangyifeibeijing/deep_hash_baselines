@@ -1,0 +1,1 @@
+2020-06-30 17:38:32.744 | INFO     | __main__:run:24 - Namespace(alpha=1, arch='alexnet', batch_size=256, code_length=None, dataset=None, device=device(type='cpu'), evaluate_interval=10, gpu=None, lr=1e-05, max_iter=300, num_workers=6, root=None, seed=3367, topk=-1)
