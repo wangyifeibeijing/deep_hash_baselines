@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from loguru import logger
 
-import pshnet
+import ADMM
 from data.data_loader import load_data
 
 
@@ -44,7 +44,7 @@ def run():
 
     # Training
     for code_length in args.code_length:
-        checkpoint = pshnet.train(
+        checkpoint = ADMM.train(
             train_dataloader,
             query_dataloader,
             retrieval_dataloader, 
