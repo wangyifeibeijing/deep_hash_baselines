@@ -91,10 +91,10 @@ def load_config():
                         help='Path of dataset')
     parser.add_argument('--code-length', default='16,32,48,64', type=str,
                         help='Binary hash code length. (default: 16,32,48,64)')
-    parser.add_argument('--arch', default='alexnet', type=str,
+    parser.add_argument('--arch', default='vgg16', type=str,
                         help='CNN model name.(default: vgg16)')#alexnet
     parser.add_argument('--batch-size', default=256, type=int,
-                        help='Batch size.(default: 256)')
+                        help='Batch size.(default: 8)')
     parser.add_argument('--lr', default=1e-5, type=float,
                         help='Learning rate.(default: 1e-5)')
     parser.add_argument('--max-iter', default=3, type=int,

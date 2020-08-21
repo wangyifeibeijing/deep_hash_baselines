@@ -87,7 +87,7 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
         '''
         with torch.no_grad():
             output_mo = torch.tensor([]).to(device)
-            data_mo = torch.tensor([]).to(device)
+
             for data, _, _ in train_dataloader:
                 output_B, output_A = model(data)
                 output_mo = torch.cat((output_mo, output_A), 0)
