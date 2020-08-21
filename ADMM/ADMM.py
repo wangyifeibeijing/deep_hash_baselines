@@ -1,4 +1,5 @@
 import time
+import scipy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,7 +9,22 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from models.model_loader import load_model
 from models.model_loader import load_model_mo
 from utils.evaluate import mean_average_precision, pr_curve
+import numpy as np
 
+global_rho1 = 1e-2
+#ρ1
+global_rho2 = 1e-2
+#ρ2
+global_rho3 = 1e-3
+#µ1
+global_rho4 = 1e-3
+#µ2
+global_gamma = 1e-3
+global_Z1=np.ones((1,1))
+global_Z2=np.ones((1,1))
+global_Y1=np.ones((1,1))
+global_Y2=np.ones((1,1))
+global_A=np.ones((1,1))
 
 def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_length, device, lr,
           max_iter, topk, evaluate_interval, anchor_num, proportion
@@ -23,7 +39,15 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
     #µ2
     gamma = 1e-3
     #γ
-
+    data_mo = torch.tensor([]).to(device)
+    for data, _, _ in train_dataloader:
+        data = data.to(device)
+        data_mo = torch.cat((data_mo, data), 0)
+        torch.cuda.empty_cache()
+    n = data_mo.size(1)
+    Y1 = torch.rand(n, code_length).to(device)
+    Y2 = torch.rand(n, code_length).to(device)
+    B=torch.rand(n,code_length).to(device)
     # Load model
     model = load_model(arch, code_length).to(device)
     # Create criterion, optimizer, scheduler
@@ -64,27 +88,28 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
             output_mo = torch.tensor([]).to(device)
             data_mo = torch.tensor([]).to(device)
             for data, _, _ in train_dataloader:
-                data = data.to(device)
                 output_B, output_A = model(data)
-
-                data_mo = torch.cat((data_mo, data), 0)
                 output_mo = torch.cat((output_mo, output_A), 0)
                 torch.cuda.empty_cache()
-            n= data_mo.size(1)
-            Y1=torch.rand(n,code_length).to(device)
-            Y2 = torch.rand(n, code_length).to(device)
+
             dist = euclidean_dist(output_mo, output_mo)
             dist = torch.exp(-1 * dist / torch.max(dist)).to(device)
             A = (2 / (torch.max(dist) - torch.min(dist))) * dist - 1
-            B = ()
+            global_A=A.numpy()
             Z1 = B + 1 / rho1 * Y1
             Z1[Z1 > 1] = 1
             Z1[Z1 > -1] = -1
             Z2 = B + 1 / rho2 * Y2
             norm_B = torch.norm(Z2)
             Z2 = torch.sqrt(n * code_length) * Z2 / norm_B
-            Y1 = Y1 + gamma * rho1 * (B - Z1);
-            Y2 = Y2 + gamma * rho2 * (B - Z2);
+            Y1 = Y1 + gamma * rho1 * (B - Z1)
+            Y2 = Y2 + gamma * rho2 * (B - Z2)
+            global_Z1=Z1.numpy()
+            global_Z2=Z2.numpy()
+            global_Y1 = Y1.numpy()
+            global_Y2 = Y2.numpy()
+            B0 = B.numpy()
+            B= torch.from_numpy(scipy.optimize.fmin_l_bfgs_b(Baim_func, B0)).to(device)
         # self-supervised deep learning
         model.train()
         for data, targets, index in train_dataloader:
@@ -94,21 +119,12 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
             # output_B for hash code .output_A for result without hash layer
             output_B, output_A= model(data)
 
-
-
-
-
-
             loss = criterion(output_B, B)
 
             running_loss += loss.item()
             loss.backward()
 
             optimizer.step()
-        with torch.no_grad():
-            # momentum update:
-            for param_q, param_k in zip(model.parameters(), model_mo.parameters()):
-                param_k.data = param_k.data * proportion + param_q.data * (1. - proportion)  # proportion = 0.999 for update
 
         scheduler.step()
         training_time += time.time() - tic
@@ -168,6 +184,15 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
 
     return checkpoint
 
+def Baim_func(b):
+    [r,n]=b.shape
+    ones=np.ones((n,1))
+    IR=np.identity(r)
+    L=np.diag(global_A.dot(ones))-global_A
+    G=global_Y1+global_Y2-global_rho1*global_Z1-global_rho2*global_Z2
+    aim =np.trace(b.dot(L.dot(b.T)))+global_rho3*0.25*np.norm(b.dot(b.T)-IR)+global_rho4*0.5*np.norm(b.dot(ones))\
+         +(global_rho1+global_rho2)*0.5*np.norm(b)+np.trace(b.dot(G.T))
+    return aim
 
 def euclidean_dist(x, y):
     """
