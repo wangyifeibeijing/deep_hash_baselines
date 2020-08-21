@@ -39,15 +39,16 @@ def train(train_dataloader, query_dataloader, retrieval_dataloader, arch, code_l
     #µ2
     gamma = 1e-3
     #γ
-    data_mo = torch.tensor([]).to(device)
-    for data, _, _ in train_dataloader:
-        data = data.to(device)
-        data_mo = torch.cat((data_mo, data), 0)
-        torch.cuda.empty_cache()
-    n = data_mo.size(1)
-    Y1 = torch.rand(n, code_length).to(device)
-    Y2 = torch.rand(n, code_length).to(device)
-    B=torch.rand(n,code_length).to(device)
+    with torch.no_grad():
+        data_mo = torch.tensor([]).to(device)
+        for data, _, _ in train_dataloader:
+            data = data.to(device)
+            data_mo = torch.cat((data_mo, data), 0)
+            torch.cuda.empty_cache()
+        n = data_mo.size(1)
+        Y1 = torch.rand(n, code_length).to(device)
+        Y2 = torch.rand(n, code_length).to(device)
+        B=torch.rand(n,code_length).to(device)
     # Load model
     model = load_model(arch, code_length).to(device)
     # Create criterion, optimizer, scheduler
